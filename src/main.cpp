@@ -5,10 +5,12 @@
 #include <iostream>
 #include <thread>
 #include <vector>
+#include <tuple>
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
 #include "spline.h"
+
 
 using namespace std;
 
@@ -21,6 +23,7 @@ double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
 
 double target_vel_mph = 49.5;
+int target_lane = 1;
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -162,6 +165,35 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 
 }
 
+inline const tuple<double, double> local_transform(const tuple<double, double> input, const tuple<double, double, double> ref)
+{
+  // First find relative coordinates and then rotate them
+  double x, y, x0, y0, theta0;
+  std::tie(x, y) = input;
+  std::tie(x0, y0, theta0) = ref;
+
+  // Translate
+  x = x - x0;
+  y = y - y0;
+
+  // Rotate
+  return std::make_tuple(x * cos(theta0) + y * sin(theta0),
+                        -x * sin(theta0) + y * cos(theta0));
+}
+
+inline const tuple<double, double> global_transform(const tuple<double, double> input, const tuple<double, double, double> ref)
+{
+  // First find relative coordinates and then rotate them
+  double x, y, x0, y0, theta0;
+  std::tie(x, y) = input;
+  std::tie(x0, y0, theta0) = ref;
+
+  // Rotate and translate
+  return std::make_tuple(x0 + x * cos(theta0) - y * sin(theta0),
+                         y0 + x * sin(theta0) + y * cos(theta0));
+}
+
+
 int main() {
   uWS::Hub h;
 
@@ -238,22 +270,103 @@ int main() {
 
           	json msgJson;
 
-          	vector<double> next_x_vals;
-          	vector<double> next_y_vals;
+            // Start computation
+            int num_prev_points = previous_path_x.size();
 
-            tk::spline s;
-            
             double next_s, next_d;
             vector<double> car_xy;
 
-            double dist_inc = 0.5;
-            for(int i = 0; i < 50; i++)
+            vector<double> spline_anchor_x, spline_anchor_y;
+
+            // Reference state for coordinate transformation
+            // Start with car state as reference
+            double ref_x = car_x;
+            double ref_y = car_y;
+            double ref_yaw = deg2rad(car_yaw);
+            if (num_prev_points < 2)
             {
-              next_s = car_s+dist_inc*(i+1);
-              next_d = 6;
-              car_xy = getXY(next_s, next_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-              next_x_vals.push_back(car_xy[0]);
-              next_y_vals.push_back(car_xy[1]);
+              // There aren't enough prior points, so make up some
+              // by back-propagating car position along same heading
+              // along with current car position.
+
+              // // // position at t-1 seconds
+              // spline_anchor_x.push_back(ref_x - 1.0*cos(car_yaw));
+              // spline_anchor_y.push_back(ref_y - 1.0*sin(car_yaw));
+            }else{
+              // Else start at the end of prior waypoints
+              // and use them as reference for coordinate transform
+              ref_x = previous_path_x[num_prev_points-1];
+              ref_y = previous_path_y[num_prev_points-1];
+
+              // Estimate past heading
+              double prev_wp_x = previous_path_x[num_prev_points-2];
+              double prev_wp_y = previous_path_y[num_prev_points-2];
+              ref_yaw = atan2(ref_y - prev_wp_y,
+                              ref_x - prev_wp_x);
+
+              spline_anchor_x.push_back(previous_path_x[num_prev_points-2]);
+              spline_anchor_y.push_back(previous_path_y[num_prev_points-2]);
+            }
+            // position at t
+            spline_anchor_x.push_back(ref_x);
+            spline_anchor_y.push_back(ref_y);
+
+            // Add equally spaced points in Frenet space
+            auto anchor_spacing = 30;
+            for(int i = 0; i < 3; i++)
+            {
+              auto wp = getXY(car_s + anchor_spacing*(i+1),
+                                        (2+ 4*target_lane),
+                                        map_waypoints_s,
+                                        map_waypoints_x,
+                                        map_waypoints_y);
+              spline_anchor_x.push_back(wp[0]);
+              spline_anchor_y.push_back(wp[1]);
+            }
+
+            // Convert spline points to local coordinates
+            auto ref_state = std::make_tuple(ref_x, ref_y, ref_yaw);
+            for(int i=0; i<spline_anchor_x.size(); i++)
+            {
+              auto x = spline_anchor_x[i];
+              auto y = spline_anchor_y[i];
+              std::tie(x, y) = local_transform(std::make_tuple(x, y), ref_state);
+              spline_anchor_x[i] = x;
+              spline_anchor_y[i] = y;
+            }
+            
+            tk::spline s;
+            // Fit spline to anchor points
+            s.set_points(spline_anchor_x, spline_anchor_y);
+
+            // Copy old waypoints first
+            vector<double> next_x_vals;
+          	vector<double> next_y_vals;
+
+            for(int i = 0; i < num_prev_points; i++)
+            {
+              next_x_vals.push_back(previous_path_x[i]);
+              next_y_vals.push_back(previous_path_y[i]);
+            }
+
+            // Find waypoint spacing based on speed
+            const auto target_x = anchor_spacing;
+            const auto target_y = s(target_x);
+            const auto target_dist = sqrt(target_x*target_x + target_y*target_y);
+            double N = target_dist / (0.02*target_vel_mph*0.447);
+
+            // Find intermediate points and transform back to global space
+            double last_x = 0;
+            for(int i = 1; i <= 50 - num_prev_points; i++)
+            {
+              // double wp_x = last_x + anchor_spacing/num_points;
+              double wp_x = last_x + target_x/N;
+              double wp_y = s(wp_x);
+
+              last_x = wp_x;
+              std::tie(wp_x, wp_y) = global_transform(std::make_tuple(wp_x, wp_y), ref_state);
+              next_x_vals.push_back(wp_x);
+              next_y_vals.push_back(wp_y);
             }
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
