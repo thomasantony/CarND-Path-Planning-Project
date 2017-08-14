@@ -22,8 +22,35 @@ constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
 
-double target_vel_mph = 49.5;
+double target_speed = 49.5*0.447;
 int target_lane = 1;
+double anchor_spacing = 30.0;
+double collision_check_margin = 30.0;
+double timestep = 0.02;
+double max_acceleration = 5; // m/s^2
+
+double current_speed = 0.0;
+struct Car {
+  int id;
+  double x;
+  double y;
+  double vx;
+  double vy;
+  double s;
+  double d;
+  double speed;
+  double yaw = 0.0;
+};
+void from_json(const json& j, Car& c) {
+  c.id = j[0];
+  c.x = j[1];
+  c.y = j[2];
+  c.vx = j[3];
+  c.vy = j[4];
+  c.speed = sqrt(c.vx*c.vx + c.vy*c.vy);
+  c.s = j[5];
+  c.d = j[6];
+}
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -165,7 +192,7 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 
 }
 
-inline const tuple<double, double> local_transform(const tuple<double, double> input, const tuple<double, double, double> ref)
+inline const tuple<double, double> GlobalToLocal(const tuple<double, double> input, const tuple<double, double, double> ref)
 {
   // First find relative coordinates and then rotate them
   double x, y, x0, y0, theta0;
@@ -181,7 +208,7 @@ inline const tuple<double, double> local_transform(const tuple<double, double> i
                         -x * sin(theta0) + y * cos(theta0));
 }
 
-inline const tuple<double, double> global_transform(const tuple<double, double> input, const tuple<double, double, double> ref)
+inline const tuple<double, double> LocalToGlobal(const tuple<double, double> input, const tuple<double, double, double> ref)
 {
   // First find relative coordinates and then rotate them
   double x, y, x0, y0, theta0;
@@ -193,6 +220,20 @@ inline const tuple<double, double> global_transform(const tuple<double, double> 
                          y0 + x * sin(theta0) + y * cos(theta0));
 }
 
+// Checks if car will collide with ego car, `delta_t` seconds in future
+const bool CheckCollision(const Car& ego, const Car& car, const double delta_t)
+{
+  const auto future_s = car.s + car.speed*delta_t;
+  const auto in_same_lane = (car.d > (2 + (4*target_lane-2)) && (car.d < (2+4*target_lane+2)));
+
+  if (in_same_lane)
+  {
+    const auto in_front = (future_s > ego.s);
+    const auto too_close= ((future_s - ego.s) < collision_check_margin);
+    return in_front && too_close;
+  }
+  return false;
+}
 
 int main() {
   uWS::Hub h;
@@ -270,11 +311,45 @@ int main() {
 
           	json msgJson;
 
-            // Start computation
+            Car ego;
+
+            ego.x = car_x;
+            ego.y = car_y;
+            ego.s = car_s;
+            ego.d = car_d;
+            ego.speed = car_speed;
+            ego.yaw = deg2rad(car_yaw);
             int num_prev_points = previous_path_x.size();
 
-            double next_s, next_d;
-            vector<double> car_xy;
+            if(num_prev_points > 0)
+            {
+              ego.s = end_path_s; // Use the "right" s value for collision prediction
+            }
+            bool too_close = false;
+            double collision_horizon = num_prev_points*timestep;
+            // Loop over other detected cars
+            for(int i=0; i<sensor_fusion.size(); i++)
+            {
+              Car car(sensor_fusion[i]);
+              if(CheckCollision(ego, car, collision_horizon))
+              {
+                too_close = true;
+                break;
+              }
+            }
+
+            if(too_close)
+            {
+              cout<<"too close! reducing speed by "<<max_acceleration*timestep<<endl;
+              current_speed -= max_acceleration*timestep;
+            }else{
+              if(current_speed < target_speed)
+              {
+                current_speed += max_acceleration*timestep;
+              }
+            }
+
+            // Start trajectory computation
 
             vector<double> spline_anchor_x, spline_anchor_y;
 
@@ -283,16 +358,7 @@ int main() {
             double ref_x = car_x;
             double ref_y = car_y;
             double ref_yaw = deg2rad(car_yaw);
-            if (num_prev_points < 2)
-            {
-              // There aren't enough prior points, so make up some
-              // by back-propagating car position along same heading
-              // along with current car position.
-
-              // // // position at t-1 seconds
-              // spline_anchor_x.push_back(ref_x - 1.0*cos(car_yaw));
-              // spline_anchor_y.push_back(ref_y - 1.0*sin(car_yaw));
-            }else{
+            if (num_prev_points > 2) {
               // Else start at the end of prior waypoints
               // and use them as reference for coordinate transform
               ref_x = previous_path_x[num_prev_points-1];
@@ -312,7 +378,6 @@ int main() {
             spline_anchor_y.push_back(ref_y);
 
             // Add equally spaced points in Frenet space
-            auto anchor_spacing = 30;
             for(int i = 0; i < 3; i++)
             {
               auto wp = getXY(car_s + anchor_spacing*(i+1),
@@ -330,11 +395,11 @@ int main() {
             {
               auto x = spline_anchor_x[i];
               auto y = spline_anchor_y[i];
-              std::tie(x, y) = local_transform(std::make_tuple(x, y), ref_state);
+              std::tie(x, y) = GlobalToLocal(std::make_tuple(x, y), ref_state);
               spline_anchor_x[i] = x;
               spline_anchor_y[i] = y;
             }
-            
+
             tk::spline s;
             // Fit spline to anchor points
             s.set_points(spline_anchor_x, spline_anchor_y);
@@ -353,7 +418,7 @@ int main() {
             const auto target_x = anchor_spacing;
             const auto target_y = s(target_x);
             const auto target_dist = sqrt(target_x*target_x + target_y*target_y);
-            double N = target_dist / (0.02*target_vel_mph*0.447);
+            double N = target_dist / (timestep*current_speed);
 
             // Find intermediate points and transform back to global space
             double last_x = 0;
@@ -364,7 +429,7 @@ int main() {
               double wp_y = s(wp_x);
 
               last_x = wp_x;
-              std::tie(wp_x, wp_y) = global_transform(std::make_tuple(wp_x, wp_y), ref_state);
+              std::tie(wp_x, wp_y) = LocalToGlobal(std::make_tuple(wp_x, wp_y), ref_state);
               next_x_vals.push_back(wp_x);
               next_y_vals.push_back(wp_y);
             }
