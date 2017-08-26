@@ -41,6 +41,16 @@ struct Car {
   double speed;
   double yaw = 0.0;
 };
+typedef struct Car Car;
+struct Map {
+  vector<double> x;
+  vector<double> y;
+  vector<double> s;
+  vector<double> dx;
+  vector<double> dy;
+};
+typedef struct Map Map;
+
 void from_json(const json& j, Car& c) {
   c.id = j[0];
   c.x = j[1];
@@ -51,6 +61,13 @@ void from_json(const json& j, Car& c) {
   c.s = j[5];
   c.d = j[6];
 }
+
+// Behavior planning stuff
+#include "fsm.h"
+enum class States { KL, LCL, LCR };
+enum class Triggers { StayInLane, DoLaneChangeLeft, DoLaneChangeRight };
+FSM::Fsm<States, States::KL, Triggers> fsm;
+
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -116,21 +133,21 @@ int NextWaypoint(double x, double y, double theta, vector<double> maps_x, vector
 }
 
 // Transform from Cartesian x,y coordinates to Frenet s,d coordinates
-vector<double> getFrenet(double x, double y, double theta, vector<double> maps_x, vector<double> maps_y)
+vector<double> getFrenet(double x, double y, double theta, const Map& map)
 {
-	int next_wp = NextWaypoint(x,y, theta, maps_x,maps_y);
+	int next_wp = NextWaypoint(x,y, theta, map.x,map.y);
 
 	int prev_wp;
 	prev_wp = next_wp-1;
 	if(next_wp == 0)
 	{
-		prev_wp  = maps_x.size()-1;
+		prev_wp  = map.x.size()-1;
 	}
 
-	double n_x = maps_x[next_wp]-maps_x[prev_wp];
-	double n_y = maps_y[next_wp]-maps_y[prev_wp];
-	double x_x = x - maps_x[prev_wp];
-	double x_y = y - maps_y[prev_wp];
+	double n_x = map.x[next_wp]-map.x[prev_wp];
+	double n_y = map.y[next_wp]-map.y[prev_wp];
+	double x_x = x - map.x[prev_wp];
+	double x_y = y - map.y[prev_wp];
 
 	// find the projection of x onto n
 	double proj_norm = (x_x*n_x+x_y*n_y)/(n_x*n_x+n_y*n_y);
@@ -141,8 +158,8 @@ vector<double> getFrenet(double x, double y, double theta, vector<double> maps_x
 
 	//see if d value is positive or negative by comparing it to a center point
 
-	double center_x = 1000-maps_x[prev_wp];
-	double center_y = 2000-maps_y[prev_wp];
+	double center_x = 1000-map.x[prev_wp];
+	double center_y = 2000-map.y[prev_wp];
 	double centerToPos = distance(center_x,center_y,x_x,x_y);
 	double centerToRef = distance(center_x,center_y,proj_x,proj_y);
 
@@ -155,7 +172,7 @@ vector<double> getFrenet(double x, double y, double theta, vector<double> maps_x
 	double frenet_s = 0;
 	for(int i = 0; i < prev_wp; i++)
 	{
-		frenet_s += distance(maps_x[i],maps_y[i],maps_x[i+1],maps_y[i+1]);
+		frenet_s += distance(map.x[i],map.y[i],map.x[i+1],map.y[i+1]);
 	}
 
 	frenet_s += distance(0,0,proj_x,proj_y);
@@ -165,23 +182,23 @@ vector<double> getFrenet(double x, double y, double theta, vector<double> maps_x
 }
 
 // Transform from Frenet s,d coordinates to Cartesian x,y
-vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> maps_x, vector<double> maps_y)
+vector<double> getXY(double s, double d, const Map& map)
 {
 	int prev_wp = -1;
 
-	while(s > maps_s[prev_wp+1] && (prev_wp < (int)(maps_s.size()-1) ))
+	while(s > map.s[prev_wp+1] && (prev_wp < (int)(map.s.size()-1) ))
 	{
 		prev_wp++;
 	}
 
-	int wp2 = (prev_wp+1)%maps_x.size();
+	int wp2 = (prev_wp+1)%map.x.size();
 
-	double heading = atan2((maps_y[wp2]-maps_y[prev_wp]),(maps_x[wp2]-maps_x[prev_wp]));
+	double heading = atan2((map.y[wp2]-map.y[prev_wp]),(map.x[wp2]-map.x[prev_wp]));
 	// the x,y,s along the segment
-	double seg_s = (s-maps_s[prev_wp]);
+	double seg_s = (s-map.s[prev_wp]);
 
-	double seg_x = maps_x[prev_wp]+seg_s*cos(heading);
-	double seg_y = maps_y[prev_wp]+seg_s*sin(heading);
+	double seg_x = map.x[prev_wp]+seg_s*cos(heading);
+	double seg_y = map.y[prev_wp]+seg_s*sin(heading);
 
 	double perp_heading = heading-pi()/2;
 
@@ -235,6 +252,92 @@ const bool CheckCollision(const Car& ego, const Car& car, const double delta_t)
   return false;
 }
 
+std::tuple<vector<double>, vector<double>> GenerateTrajectory(int target_lane, double target_speed, const Car& ego, const Map& map,
+                                                              vector<double> previous_path_x, vector<double> previous_path_y)
+{
+  vector<double> spline_anchor_x, spline_anchor_y;
+
+  auto num_prev_points = previous_path_x.size();
+  // Reference state for coordinate transformation
+  // Start with car state as reference
+  double ref_x = ego.x;
+  double ref_y = ego.y;
+  double ref_yaw = deg2rad(ego.yaw);
+  if (num_prev_points > 2) {
+    // Else start at the end of prior waypoints
+    // and use them as reference for coordinate transform
+    ref_x = previous_path_x[num_prev_points-1];
+    ref_y = previous_path_y[num_prev_points-1];
+
+    // Estimate past heading
+    double prev_wp_x = previous_path_x[num_prev_points-2];
+    double prev_wp_y = previous_path_y[num_prev_points-2];
+    ref_yaw = atan2(ref_y - prev_wp_y,
+                    ref_x - prev_wp_x);
+
+    spline_anchor_x.push_back(previous_path_x[num_prev_points-2]);
+    spline_anchor_y.push_back(previous_path_y[num_prev_points-2]);
+  }
+  // position at t
+  spline_anchor_x.push_back(ref_x);
+  spline_anchor_y.push_back(ref_y);
+
+  // Add equally spaced points in Frenet space
+  for(int i = 0; i < 3; i++)
+  {
+    auto wp = getXY(ego.s + anchor_spacing*(i+1),
+                    (2+ 4*target_lane),
+                    map);
+    spline_anchor_x.push_back(wp[0]);
+    spline_anchor_y.push_back(wp[1]);
+  }
+
+  // Convert spline points to local coordinates
+  auto ref_state = std::make_tuple(ref_x, ref_y, ref_yaw);
+  for(int i=0; i<spline_anchor_x.size(); i++)
+  {
+    auto x = spline_anchor_x[i];
+    auto y = spline_anchor_y[i];
+    std::tie(x, y) = GlobalToLocal(std::make_tuple(x, y), ref_state);
+    spline_anchor_x[i] = x;
+    spline_anchor_y[i] = y;
+  }
+
+  tk::spline s;
+  // Fit spline to anchor points
+  s.set_points(spline_anchor_x, spline_anchor_y);
+
+  // Copy old waypoints first
+  vector<double> next_x_vals;
+  vector<double> next_y_vals;
+
+  for(int i = 0; i < num_prev_points; i++)
+  {
+    next_x_vals.push_back(previous_path_x[i]);
+    next_y_vals.push_back(previous_path_y[i]);
+  }
+
+  // Find waypoint spacing based on speed
+  const auto target_x = anchor_spacing;
+  const auto target_y = s(target_x);
+  const auto target_dist = sqrt(target_x*target_x + target_y*target_y);
+  double N = target_dist / (timestep*current_speed);
+
+  // Find intermediate points and transform back to global space
+  double last_x = 0;
+  for(int i = 1; i <= 50 - num_prev_points; i++)
+  {
+    // double wp_x = last_x + anchor_spacing/num_points;
+    double wp_x = last_x + target_x/N;
+    double wp_y = s(wp_x);
+
+    last_x = wp_x;
+    std::tie(wp_x, wp_y) = LocalToGlobal(std::make_tuple(wp_x, wp_y), ref_state);
+    next_x_vals.push_back(wp_x);
+    next_y_vals.push_back(wp_y);
+  }
+  return make_tuple(next_x_vals, next_y_vals);
+}
 int main() {
   uWS::Hub h;
 
@@ -272,7 +375,9 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  Map map = {map_waypoints_x, map_waypoints_y, map_waypoints_s, map_waypoints_dx, map_waypoints_dy};
+
+  h.onMessage([&map](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -311,14 +416,14 @@ int main() {
 
           	json msgJson;
 
-            Car ego;
+            Car ego = {0, car_x, car_y, 0, 0, car_s, car_d, car_speed, deg2rad(car_yaw)};
 
-            ego.x = car_x;
-            ego.y = car_y;
-            ego.s = car_s;
-            ego.d = car_d;
-            ego.speed = car_speed;
-            ego.yaw = deg2rad(car_yaw);
+//            ego.x = car_x;
+//            ego.y = car_y;
+//            ego.s = car_s;
+//            ego.d = car_d;
+//            ego.speed = car_speed;
+//            ego.yaw = deg2rad(car_yaw);
             int num_prev_points = previous_path_x.size();
 
             if(num_prev_points > 0)
@@ -334,10 +439,12 @@ int main() {
               if(CheckCollision(ego, car, collision_horizon))
               {
                 too_close = true;
+                target_lane -= 1;
                 break;
               }
             }
 
+            target_lane = max(0, target_lane);
             if(too_close)
             {
               cout<<"too close! reducing speed by "<<max_acceleration*timestep<<endl;
@@ -350,89 +457,8 @@ int main() {
             }
 
             // Start trajectory computation
-
-            vector<double> spline_anchor_x, spline_anchor_y;
-
-            // Reference state for coordinate transformation
-            // Start with car state as reference
-            double ref_x = car_x;
-            double ref_y = car_y;
-            double ref_yaw = deg2rad(car_yaw);
-            if (num_prev_points > 2) {
-              // Else start at the end of prior waypoints
-              // and use them as reference for coordinate transform
-              ref_x = previous_path_x[num_prev_points-1];
-              ref_y = previous_path_y[num_prev_points-1];
-
-              // Estimate past heading
-              double prev_wp_x = previous_path_x[num_prev_points-2];
-              double prev_wp_y = previous_path_y[num_prev_points-2];
-              ref_yaw = atan2(ref_y - prev_wp_y,
-                              ref_x - prev_wp_x);
-
-              spline_anchor_x.push_back(previous_path_x[num_prev_points-2]);
-              spline_anchor_y.push_back(previous_path_y[num_prev_points-2]);
-            }
-            // position at t
-            spline_anchor_x.push_back(ref_x);
-            spline_anchor_y.push_back(ref_y);
-
-            // Add equally spaced points in Frenet space
-            for(int i = 0; i < 3; i++)
-            {
-              auto wp = getXY(car_s + anchor_spacing*(i+1),
-                                        (2+ 4*target_lane),
-                                        map_waypoints_s,
-                                        map_waypoints_x,
-                                        map_waypoints_y);
-              spline_anchor_x.push_back(wp[0]);
-              spline_anchor_y.push_back(wp[1]);
-            }
-
-            // Convert spline points to local coordinates
-            auto ref_state = std::make_tuple(ref_x, ref_y, ref_yaw);
-            for(int i=0; i<spline_anchor_x.size(); i++)
-            {
-              auto x = spline_anchor_x[i];
-              auto y = spline_anchor_y[i];
-              std::tie(x, y) = GlobalToLocal(std::make_tuple(x, y), ref_state);
-              spline_anchor_x[i] = x;
-              spline_anchor_y[i] = y;
-            }
-
-            tk::spline s;
-            // Fit spline to anchor points
-            s.set_points(spline_anchor_x, spline_anchor_y);
-
-            // Copy old waypoints first
-            vector<double> next_x_vals;
-          	vector<double> next_y_vals;
-
-            for(int i = 0; i < num_prev_points; i++)
-            {
-              next_x_vals.push_back(previous_path_x[i]);
-              next_y_vals.push_back(previous_path_y[i]);
-            }
-
-            // Find waypoint spacing based on speed
-            const auto target_x = anchor_spacing;
-            const auto target_y = s(target_x);
-            const auto target_dist = sqrt(target_x*target_x + target_y*target_y);
-            double N = target_dist / (timestep*current_speed);
-
-            // Find intermediate points and transform back to global space
-            double last_x = 0;
-            for(int i = 1; i <= 50 - num_prev_points; i++)
-            {
-              // double wp_x = last_x + anchor_spacing/num_points;
-              double wp_x = last_x + target_x/N;
-              double wp_y = s(wp_x);
-
-              last_x = wp_x;
-              std::tie(wp_x, wp_y) = LocalToGlobal(std::make_tuple(wp_x, wp_y), ref_state);
-              next_x_vals.push_back(wp_x);
-              next_y_vals.push_back(wp_y);
-            }
+            vector<double> next_x_vals, next_y_vals;
+            tie(next_x_vals, next_y_vals) = GenerateTrajectory(target_lane, target_speed, ego, map, previous_path_x, previous_path_y);
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
 
