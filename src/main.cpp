@@ -22,14 +22,18 @@ constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
 
-double target_speed = 49.5*0.447;
-int target_lane = 1;
+double speed_limit = 49.5*0.447;
 double anchor_spacing = 30.0;
 double collision_check_margin = 30.0;
 double timestep = 0.02;
 double max_acceleration = 5; // m/s^2
 
+double target_speed = speed_limit;
+int target_lane = 1;
+
 double current_speed = 0.0;
+int current_lane = 1;
+
 struct Car {
   int id;
   double x;
@@ -93,7 +97,7 @@ string hasData(string s) {
   return "";
 }
 
-double distance (double x1, double y1, double x2, double y2) 
+double distance (double x1, double y1, double x2, double y2)
 {
 	return sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1));
 }
@@ -340,7 +344,7 @@ const Trajectory GenerateTrajectory(int target_lane, double target_speed, const 
     double wp_y = s(wp_x);
 
     last_x = wp_x;
-    std::tie(wp_x, wp_y) = LocalToGlobal(std::make_tuple(wp_x, wp_y), ref_state);
+    tie(wp_x, wp_y) = LocalToGlobal(make_tuple(wp_x, wp_y), ref_state);
     output.x.push_back(wp_x);
     output.y.push_back(wp_y);
   }
@@ -350,11 +354,8 @@ int main() {
   uWS::Hub h;
 
   // Load up map values for waypoint's x,y,s and d normalized normal vectors
-  vector<double> map_waypoints_x;
-  vector<double> map_waypoints_y;
-  vector<double> map_waypoints_s;
-  vector<double> map_waypoints_dx;
-  vector<double> map_waypoints_dy;
+  Map map;
+  Trajectory prev_path, future_path;
 
   // Waypoint map to read from
   string map_file_ = "../data/highway_map.csv";
@@ -376,15 +377,12 @@ int main() {
   	iss >> s;
   	iss >> d_x;
   	iss >> d_y;
-  	map_waypoints_x.push_back(x);
-  	map_waypoints_y.push_back(y);
-  	map_waypoints_s.push_back(s);
-  	map_waypoints_dx.push_back(d_x);
-  	map_waypoints_dy.push_back(d_y);
+  	map.x.push_back(x);
+  	map.y.push_back(y);
+  	map.s.push_back(s);
+  	map.dx.push_back(d_x);
+  	map.dy.push_back(d_y);
   }
-
-  Map map = {map_waypoints_x, map_waypoints_y, map_waypoints_s, map_waypoints_dx, map_waypoints_dy};
-  Trajectory prev_path, future_path;
 
   h.onMessage([&map, &prev_path, &future_path](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
@@ -436,6 +434,8 @@ int main() {
             }
             bool too_close = false;
             double collision_horizon = num_prev_points*timestep;
+
+            target_speed = speed_limit;
             // Loop over other detected cars
             for(int i=0; i<sensor_fusion.size(); i++)
             {
@@ -443,22 +443,27 @@ int main() {
               if(CheckCollision(ego, car, collision_horizon))
               {
                 too_close = true;
-                target_lane -= 1;
+                // current_lane -= 1;
+                target_speed = car.speed;
                 break;
               }
             }
+            auto delta_lane = target_lane - current_lane;
+            delta_lane = min(1, max(-1, delta_lane)); // Change one lane at a time
+            current_lane = max(0, current_lane + delta_lane);
+//            if(too_close)
+//            {
+//              cout<<"too close! reducing speed by "<<max_acceleration*timestep<<endl;
+//              current_speed -= max_acceleration*timestep;
+//            }else{
+            auto delta_speed = target_speed - current_speed;
+            delta_speed = min(max_acceleration*timestep, max(-max_acceleration*timestep, delta_speed));
+            current_speed += delta_speed;
+//            if(current_speed < target_speed)
+//            {
+//               current_speed += max_acceleration*timestep;
+//            }
 
-            target_lane = max(0, target_lane);
-            if(too_close)
-            {
-              cout<<"too close! reducing speed by "<<max_acceleration*timestep<<endl;
-              current_speed -= max_acceleration*timestep;
-            }else{
-              if(current_speed < target_speed)
-              {
-                current_speed += max_acceleration*timestep;
-              }
-            }
 
             // Start trajectory computation
             future_path = GenerateTrajectory(target_lane, target_speed, ego, map, prev_path);
