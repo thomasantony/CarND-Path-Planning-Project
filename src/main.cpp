@@ -28,11 +28,11 @@ double collision_check_margin = 30.0;
 double timestep = 0.02;
 double max_acceleration = 5; // m/s^2
 
-double target_speed = speed_limit;
-int target_lane = 1;
-
-double current_speed = 0.0;
-int current_lane = 1;
+//double target_speed = speed_limit;
+//int target_lane = 1;
+//
+//double current_speed = 0.0;
+//int current_lane = 1;
 
 struct Car {
   int id;
@@ -74,13 +74,6 @@ void from_json(const json& j, Car& c) {
   c.s = j[5];
   c.d = j[6];
 }
-
-// Behavior planning stuff
-#include "fsm.h"
-enum class States { KL, LCL, LCR };
-enum class Triggers { StayInLane, DoLaneChangeLeft, DoLaneChangeRight };
-FSM::Fsm<States, States::KL, Triggers> fsm;
-
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -251,10 +244,10 @@ inline const tuple<double, double> LocalToGlobal(const tuple<double, double> inp
 }
 
 // Checks if car will collide with ego car, `delta_t` seconds in future
-const bool CheckCollision(const Car& ego, const Car& car, const double delta_t)
+const bool CheckCollision(const Car& ego, const Car& car, int lane, const double delta_t)
 {
   const auto future_s = car.s + car.speed*delta_t;
-  const auto in_same_lane = (car.d > (2 + (4*target_lane-2)) && (car.d < (2+4*target_lane+2)));
+  const auto in_same_lane = (car.d > (2 + (4*lane-2)) && (car.d < (2+4*lane+2)));
 
   if (in_same_lane)
   {
@@ -265,8 +258,11 @@ const bool CheckCollision(const Car& ego, const Car& car, const double delta_t)
   return false;
 }
 
-const Trajectory GenerateTrajectory(int target_lane, double target_speed, const Car& ego, const Map& map,
-                                                              const Trajectory& prev_path)
+const Trajectory GenerateTrajectory(int lane,
+                                    double speed,
+                                    const Car& ego,
+                                    const Map& map,
+                                    const Trajectory& prev_path)
 {
   vector<double> spline_anchor_x, spline_anchor_y;
 
@@ -299,7 +295,7 @@ const Trajectory GenerateTrajectory(int target_lane, double target_speed, const 
   for(int i = 0; i < 3; i++)
   {
     auto wp = getXY(ego.s + anchor_spacing*(i+1),
-                    (2+ 4*target_lane),
+                    (2+ 4*lane),
                     map);
     spline_anchor_x.push_back(wp[0]);
     spline_anchor_y.push_back(wp[1]);
@@ -333,7 +329,7 @@ const Trajectory GenerateTrajectory(int target_lane, double target_speed, const 
   const auto target_x = anchor_spacing;
   const auto target_y = s(target_x);
   const auto target_dist = sqrt(target_x*target_x + target_y*target_y);
-  double N = target_dist / (timestep*current_speed);
+  double N = target_dist / (timestep*speed);
 
   // Find intermediate points and transform back to global space
   double last_x = 0;
@@ -350,12 +346,65 @@ const Trajectory GenerateTrajectory(int target_lane, double target_speed, const 
   }
   return output;
 }
+
+// Behavior planning stuff
+#include "fsm.h"
+enum class States { KL, LCL, LCR };
+enum class Triggers { StayInLane, DoLaneChangeLeft, DoLaneChangeRight };
+
+class Behavior {
+private:
+  FSM::Fsm<States, States::KL, Triggers> fsm_;
+  int target_lane_, current_lane_;
+  double target_speed_, current_speed_;
+public:
+  Behavior(): target_lane_(1), current_lane_(1), target_speed_(49.5*.447), current_speed_(0.0) {}
+  const Trajectory UpdateTrajectory(const Car& ego,
+                                     const vector<Car>& traffic,
+                                     const Map& map,
+                                     const Trajectory& prev_path){
+    // Returns trajectory for current state of FSM
+    double collision_horizon = prev_path.size()*timestep;
+    if(fsm_.state() == States::KL)
+    {
+      target_speed_ = speed_limit;
+      // Loop over other detected cars
+      for(int i=0; i<traffic.size(); i++)
+      {
+        const Car& car = traffic[i];
+        if(CheckCollision(ego, car, current_lane_, collision_horizon))
+        {
+          target_speed_ = car.speed;
+          break;
+        }
+      }
+    }
+
+    // Gentle acceleration
+    auto delta_lane = target_lane_ - current_lane_;
+    delta_lane = min(1, max(-1, delta_lane)); // Change one lane at a time
+    current_lane_ = max(0, current_lane_ + delta_lane);
+
+    auto delta_speed = target_speed_ - current_speed_;
+    delta_speed = min(max_acceleration*timestep, max(-max_acceleration*timestep, delta_speed));
+    current_speed_ += delta_speed;
+    return GenerateTrajectory(current_lane_, current_speed_, ego, map, prev_path);
+  }
+};
+
+
 int main() {
   uWS::Hub h;
 
   // Load up map values for waypoint's x,y,s and d normalized normal vectors
   Map map;
   Trajectory prev_path, future_path;
+  Behavior behavior;
+
+//  fsm.add_transitions({
+//    //  from state ,to state  ,triggers        ,guard                    ,action
+//    { States::KL, States::LCL, Triggers::DoLaneChangeLeft, [&]{return true;}, [&]{} },
+//  });
 
   // Waypoint map to read from
   string map_file_ = "../data/highway_map.csv";
@@ -384,7 +433,7 @@ int main() {
   	map.dy.push_back(d_y);
   }
 
-  h.onMessage([&map, &prev_path, &future_path](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&map, &behavior, &prev_path, &future_path](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -432,41 +481,40 @@ int main() {
             {
               ego.s = end_path_s; // Use the "right" s value for collision prediction
             }
-            bool too_close = false;
-            double collision_horizon = num_prev_points*timestep;
+            //bool too_close = false;
+            //double collision_horizon = num_prev_points*timestep;
 
-            target_speed = speed_limit;
-            // Loop over other detected cars
+//            target_speed = speed_limit;
+            vector<Car> traffic(sensor_fusion.size());
             for(int i=0; i<sensor_fusion.size(); i++)
             {
               Car car(sensor_fusion[i]);
-              if(CheckCollision(ego, car, collision_horizon))
-              {
-                too_close = true;
-                // current_lane -= 1;
-                target_speed = car.speed;
-                break;
-              }
+              traffic.push_back(car);
             }
-            auto delta_lane = target_lane - current_lane;
-            delta_lane = min(1, max(-1, delta_lane)); // Change one lane at a time
-            current_lane = max(0, current_lane + delta_lane);
-//            if(too_close)
+            // Loop over other detected cars
+//            for(int i=0; i<sensor_fusion.size(); i++)
 //            {
-//              cout<<"too close! reducing speed by "<<max_acceleration*timestep<<endl;
-//              current_speed -= max_acceleration*timestep;
-//            }else{
-            auto delta_speed = target_speed - current_speed;
-            delta_speed = min(max_acceleration*timestep, max(-max_acceleration*timestep, delta_speed));
-            current_speed += delta_speed;
-//            if(current_speed < target_speed)
-//            {
-//               current_speed += max_acceleration*timestep;
+//              Car car(sensor_fusion[i]);
+//
+//              if(CheckCollision(ego, car, collision_horizon))
+//              {
+//                too_close = true;
+//                // current_lane -= 1;
+//                target_speed = car.speed;
+//                break;
+//              }
 //            }
-
+//            auto delta_lane = target_lane - current_lane;
+//            delta_lane = min(1, max(-1, delta_lane)); // Change one lane at a time
+//            current_lane = max(0, current_lane + delta_lane);
+//
+//            auto delta_speed = target_speed - current_speed;
+//            delta_speed = min(max_acceleration*timestep, max(-max_acceleration*timestep, delta_speed));
+//            current_speed += delta_speed;
 
             // Start trajectory computation
-            future_path = GenerateTrajectory(target_lane, target_speed, ego, map, prev_path);
+            future_path = behavior.UpdateTrajectory(ego, traffic, map, prev_path);
+//            future_path = GenerateTrajectory(target_lane, target_speed, ego, map, prev_path);
           	msgJson["next_x"] = future_path.x;
           	msgJson["next_y"] = future_path.y;
 
