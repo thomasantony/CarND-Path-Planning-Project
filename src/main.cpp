@@ -50,6 +50,15 @@ struct Map {
   vector<double> dy;
 };
 typedef struct Map Map;
+struct Trajectory {
+  vector<double> x;
+  vector<double> y;
+
+  inline size_t size() const{
+    return x.size();
+  }
+};
+typedef struct Trajectory Trajectory;
 
 void from_json(const json& j, Car& c) {
   c.id = j[0];
@@ -84,7 +93,7 @@ string hasData(string s) {
   return "";
 }
 
-double distance(double x1, double y1, double x2, double y2)
+double distance (double x1, double y1, double x2, double y2) 
 {
 	return sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1));
 }
@@ -252,12 +261,12 @@ const bool CheckCollision(const Car& ego, const Car& car, const double delta_t)
   return false;
 }
 
-std::tuple<vector<double>, vector<double>> GenerateTrajectory(int target_lane, double target_speed, const Car& ego, const Map& map,
-                                                              vector<double> previous_path_x, vector<double> previous_path_y)
+const Trajectory GenerateTrajectory(int target_lane, double target_speed, const Car& ego, const Map& map,
+                                                              const Trajectory& prev_path)
 {
   vector<double> spline_anchor_x, spline_anchor_y;
 
-  auto num_prev_points = previous_path_x.size();
+  auto num_prev_points = prev_path.size();
   // Reference state for coordinate transformation
   // Start with car state as reference
   double ref_x = ego.x;
@@ -266,17 +275,17 @@ std::tuple<vector<double>, vector<double>> GenerateTrajectory(int target_lane, d
   if (num_prev_points > 2) {
     // Else start at the end of prior waypoints
     // and use them as reference for coordinate transform
-    ref_x = previous_path_x[num_prev_points-1];
-    ref_y = previous_path_y[num_prev_points-1];
+    ref_x = prev_path.x[num_prev_points-1];
+    ref_y = prev_path.y[num_prev_points-1];
 
     // Estimate past heading
-    double prev_wp_x = previous_path_x[num_prev_points-2];
-    double prev_wp_y = previous_path_y[num_prev_points-2];
+    double prev_wp_x = prev_path.x[num_prev_points-2];
+    double prev_wp_y = prev_path.y[num_prev_points-2];
     ref_yaw = atan2(ref_y - prev_wp_y,
                     ref_x - prev_wp_x);
 
-    spline_anchor_x.push_back(previous_path_x[num_prev_points-2]);
-    spline_anchor_y.push_back(previous_path_y[num_prev_points-2]);
+    spline_anchor_x.push_back(prev_path.x[num_prev_points-2]);
+    spline_anchor_y.push_back(prev_path.y[num_prev_points-2]);
   }
   // position at t
   spline_anchor_x.push_back(ref_x);
@@ -308,13 +317,12 @@ std::tuple<vector<double>, vector<double>> GenerateTrajectory(int target_lane, d
   s.set_points(spline_anchor_x, spline_anchor_y);
 
   // Copy old waypoints first
-  vector<double> next_x_vals;
-  vector<double> next_y_vals;
+  Trajectory output;
 
   for(int i = 0; i < num_prev_points; i++)
   {
-    next_x_vals.push_back(previous_path_x[i]);
-    next_y_vals.push_back(previous_path_y[i]);
+    output.x.push_back(prev_path.x[i]);
+    output.y.push_back(prev_path.y[i]);
   }
 
   // Find waypoint spacing based on speed
@@ -333,10 +341,10 @@ std::tuple<vector<double>, vector<double>> GenerateTrajectory(int target_lane, d
 
     last_x = wp_x;
     std::tie(wp_x, wp_y) = LocalToGlobal(std::make_tuple(wp_x, wp_y), ref_state);
-    next_x_vals.push_back(wp_x);
-    next_y_vals.push_back(wp_y);
+    output.x.push_back(wp_x);
+    output.y.push_back(wp_y);
   }
-  return make_tuple(next_x_vals, next_y_vals);
+  return output;
 }
 int main() {
   uWS::Hub h;
@@ -376,8 +384,9 @@ int main() {
   }
 
   Map map = {map_waypoints_x, map_waypoints_y, map_waypoints_s, map_waypoints_dx, map_waypoints_dy};
+  Trajectory prev_path, future_path;
 
-  h.onMessage([&map](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&map, &prev_path, &future_path](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -417,14 +426,9 @@ int main() {
           	json msgJson;
 
             Car ego = {0, car_x, car_y, 0, 0, car_s, car_d, car_speed, deg2rad(car_yaw)};
+            prev_path = {previous_path_x, previous_path_y};
 
-//            ego.x = car_x;
-//            ego.y = car_y;
-//            ego.s = car_s;
-//            ego.d = car_d;
-//            ego.speed = car_speed;
-//            ego.yaw = deg2rad(car_yaw);
-            int num_prev_points = previous_path_x.size();
+            int num_prev_points = prev_path.size();
 
             if(num_prev_points > 0)
             {
@@ -457,10 +461,9 @@ int main() {
             }
 
             // Start trajectory computation
-            vector<double> next_x_vals, next_y_vals;
-            tie(next_x_vals, next_y_vals) = GenerateTrajectory(target_lane, target_speed, ego, map, previous_path_x, previous_path_y);
-          	msgJson["next_x"] = next_x_vals;
-          	msgJson["next_y"] = next_y_vals;
+            future_path = GenerateTrajectory(target_lane, target_speed, ego, map, prev_path);
+          	msgJson["next_x"] = future_path.x;
+          	msgJson["next_y"] = future_path.y;
 
           	auto msg = "42[\"control\","+ msgJson.dump()+"]";
 
