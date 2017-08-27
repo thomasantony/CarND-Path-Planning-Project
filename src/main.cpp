@@ -5,6 +5,7 @@
 #include <iostream>
 #include <thread>
 #include <vector>
+#include <map>
 #include <tuple>
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
@@ -27,6 +28,7 @@ double anchor_spacing = 30.0;
 double collision_check_margin = 30.0;
 double timestep = 0.02;
 double max_acceleration = 5; // m/s^2
+int lanes_available = 3;
 
 //double target_speed = speed_limit;
 //int target_lane = 1;
@@ -44,6 +46,7 @@ struct Car {
   double d;
   double speed;
   double yaw = 0.0;
+  int lane = 0;
 };
 typedef struct Car Car;
 struct Map {
@@ -63,6 +66,11 @@ struct Trajectory {
   }
 };
 typedef struct Trajectory Trajectory;
+struct Command {
+  double speed;
+  int lane;
+};
+typedef struct Command Command;
 
 void from_json(const json& j, Car& c) {
   c.id = j[0];
@@ -258,12 +266,21 @@ const bool CheckCollision(const Car& ego, const Car& car, int lane, const double
   return false;
 }
 
-const Trajectory GenerateTrajectory(int lane,
-                                    double speed,
+const Trajectory GenerateTrajectory(int target_lane,
+                                    double target_speed,
                                     const Car& ego,
                                     const Map& map,
                                     const Trajectory& prev_path)
 {
+  // Lane shift one at a time
+  auto delta_lane = target_lane - ego.lane;
+  delta_lane = min(1, max(-1, delta_lane)); // Change one lane at a time
+  auto cmd_lane = max(0, ego.lane + delta_lane);
+  // Gentle acceleration
+  auto delta_speed = target_speed - ego.speed;
+  delta_speed = min(max_acceleration*timestep, max(-max_acceleration*timestep, delta_speed));
+  auto cmd_speed = ego.speed + delta_speed;
+
   vector<double> spline_anchor_x, spline_anchor_y;
 
   auto num_prev_points = prev_path.size();
@@ -295,7 +312,7 @@ const Trajectory GenerateTrajectory(int lane,
   for(int i = 0; i < 3; i++)
   {
     auto wp = getXY(ego.s + anchor_spacing*(i+1),
-                    (2+ 4*lane),
+                    (2+ 4*cmd_lane),
                     map);
     spline_anchor_x.push_back(wp[0]);
     spline_anchor_y.push_back(wp[1]);
@@ -329,7 +346,7 @@ const Trajectory GenerateTrajectory(int lane,
   const auto target_x = anchor_spacing;
   const auto target_y = s(target_x);
   const auto target_dist = sqrt(target_x*target_x + target_y*target_y);
-  double N = target_dist / (timestep*speed);
+  double N = target_dist / (timestep*cmd_speed);
 
   // Find intermediate points and transform back to global space
   double last_x = 0;
@@ -348,50 +365,7 @@ const Trajectory GenerateTrajectory(int lane,
 }
 
 // Behavior planning stuff
-#include "fsm.h"
-enum class States { KL, LCL, LCR };
-enum class Triggers { StayInLane, DoLaneChangeLeft, DoLaneChangeRight };
-
-class Behavior {
-private:
-  FSM::Fsm<States, States::KL, Triggers> fsm_;
-  int target_lane_, current_lane_;
-  double target_speed_, current_speed_;
-public:
-  Behavior(): target_lane_(1), current_lane_(1), target_speed_(49.5*.447), current_speed_(0.0) {}
-  const Trajectory UpdateTrajectory(const Car& ego,
-                                     const vector<Car>& traffic,
-                                     const Map& map,
-                                     const Trajectory& prev_path){
-    // Returns trajectory for current state of FSM
-    double collision_horizon = prev_path.size()*timestep;
-    if(fsm_.state() == States::KL)
-    {
-      target_speed_ = speed_limit;
-      // Loop over other detected cars
-      for(int i=0; i<traffic.size(); i++)
-      {
-        const Car& car = traffic[i];
-        if(CheckCollision(ego, car, current_lane_, collision_horizon))
-        {
-          target_speed_ = car.speed;
-          break;
-        }
-      }
-    }
-
-    // Gentle acceleration
-    auto delta_lane = target_lane_ - current_lane_;
-    delta_lane = min(1, max(-1, delta_lane)); // Change one lane at a time
-    current_lane_ = max(0, current_lane_ + delta_lane);
-
-    auto delta_speed = target_speed_ - current_speed_;
-    delta_speed = min(max_acceleration*timestep, max(-max_acceleration*timestep, delta_speed));
-    current_speed_ += delta_speed;
-    return GenerateTrajectory(current_lane_, current_speed_, ego, map, prev_path);
-  }
-};
-
+#include "behavior.h"
 
 int main() {
   uWS::Hub h;
@@ -472,7 +446,7 @@ int main() {
 
           	json msgJson;
 
-            Car ego = {0, car_x, car_y, 0, 0, car_s, car_d, car_speed, deg2rad(car_yaw)};
+            Car ego = {0, car_x, car_y, 0, 0, car_s, car_d, car_speed, deg2rad(car_yaw), 0};
             prev_path = {previous_path_x, previous_path_y};
 
             int num_prev_points = prev_path.size();
@@ -481,10 +455,7 @@ int main() {
             {
               ego.s = end_path_s; // Use the "right" s value for collision prediction
             }
-            //bool too_close = false;
-            //double collision_horizon = num_prev_points*timestep;
 
-//            target_speed = speed_limit;
             vector<Car> traffic(sensor_fusion.size());
             for(int i=0; i<sensor_fusion.size(); i++)
             {
@@ -492,29 +463,9 @@ int main() {
               traffic.push_back(car);
             }
             // Loop over other detected cars
-//            for(int i=0; i<sensor_fusion.size(); i++)
-//            {
-//              Car car(sensor_fusion[i]);
-//
-//              if(CheckCollision(ego, car, collision_horizon))
-//              {
-//                too_close = true;
-//                // current_lane -= 1;
-//                target_speed = car.speed;
-//                break;
-//              }
-//            }
-//            auto delta_lane = target_lane - current_lane;
-//            delta_lane = min(1, max(-1, delta_lane)); // Change one lane at a time
-//            current_lane = max(0, current_lane + delta_lane);
-//
-//            auto delta_speed = target_speed - current_speed;
-//            delta_speed = min(max_acceleration*timestep, max(-max_acceleration*timestep, delta_speed));
-//            current_speed += delta_speed;
 
-            // Start trajectory computation
-            future_path = behavior.UpdateTrajectory(ego, traffic, map, prev_path);
-//            future_path = GenerateTrajectory(target_lane, target_speed, ego, map, prev_path);
+            // Do trajectory computation
+            future_path = behavior.UpdateState(ego, traffic, map, prev_path);
           	msgJson["next_x"] = future_path.x;
           	msgJson["next_y"] = future_path.y;
 
