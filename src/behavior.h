@@ -246,7 +246,7 @@ public:
       cout<<fsm_.state()<<" ";
       cout<<"Front:"<<(will_collide?"Blocked":"Clear")<<" ";
       cout<<"Left:"<<(left_lane.clear?"Clear":"Blocked")<<" ";
-      cout<<"Right:"<<(left_lane.clear?"Clear":"Blocked")<<"\r";
+      cout<<"Right:"<<(left_lane.clear?"Clear":"Blocked")<<"\n";
 
       if (will_collide) {
         const bool do_lcl = false, do_lcr = false;
