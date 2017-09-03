@@ -303,6 +303,9 @@ The current implementation is a rather simple one with only three states and hen
 
 In that case, it would be prudent to switch to a behavior planner based on cost functions. The trajectory generator was refactored into a separate function for precisely this reason. It will be possible to generate trajectories for each possible state and evaluate cost functions over those predicted trajectories in order to determine state transitions. However, this was not implemented due to time constraints and because the current version satisfies the requirements.
 
+### Videos
+[![Project video demo](https://img.youtube.com/vi/qrVVCI4LqGQ/0.jpg)](https://youtu.be/qrVVCI4LqGQ)
+
 ---
 
 ### Simulator.
