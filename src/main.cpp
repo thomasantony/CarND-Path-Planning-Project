@@ -25,19 +25,13 @@ constexpr double rad2deg(double x) { return x * 180 / pi(); }
 
 static const double speed_limit = 49.0*0.447;
 static const double anchor_spacing = 30.0;
-static const double collision_check_margin = 30.0;
+static const double collision_check_margin = 35.0;
 static const auto buffer_distance = collision_check_margin - 5.0;
 static const double lane_check_front_margin = 40.0;
 static const double lane_check_back_margin = -5.0;
 static const double timestep = 0.02;
 static const double max_acceleration = 5; // m/s^2
 int lanes_available = 3;
-
-//double target_speed = speed_limit;
-//int target_lane = 1;
-//
-//double current_speed = 0.0;
-//int current_lane = 1;
 
 #include "types.h"
 
@@ -330,11 +324,6 @@ int main() {
   Map map;
   Trajectory prev_path, future_path;
   Behavior behavior;
-
-//  fsm.add_transitions({
-//    //  from state ,to state  ,triggers        ,guard                    ,action
-//    { States::KL, States::LCL, Triggers::DoLaneChangeLeft, [&]{return true;}, [&]{} },
-//  });
 
   // Waypoint map to read from
   string map_file_ = "../data/highway_map.csv";

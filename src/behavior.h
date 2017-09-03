@@ -11,47 +11,8 @@ using namespace std;
 #include "types.h"
 #include "cost_functions.h"
 
-
-const Command GenerateCommandForTarget(int target_lane, double target_speed, const Car &ego)
-{
-  // Lane shift one at a time
-  int delta_lane = target_lane - ego.lane;
-  delta_lane = min(1, max(-1, delta_lane)); // Change one lane at a time
-  int cmd_lane = max(0, ego.lane + delta_lane);
-
-  // Gentle acceleration
-  double delta_speed = target_speed - ego.speed;
-  delta_speed = std::min(max_acceleration*timestep, std::max(-max_acceleration*timestep, delta_speed));
-  double cmd_speed = ego.speed + delta_speed;
-
-  return {cmd_lane, cmd_speed};
-}
-
 // Checks if car will collide with ego car, `delta_t` seconds in future
 const bool CheckFrontCollision(const Car& ego, const Car& car, const Trajectory& prev_path, int lane, const double delta_t)
-{
-  double future_ego_s;
-  if(0)//prev_path.size() > 0)
-  {
-    future_ego_s = prev_path.end_path_s; // Use the "right" s value for collision prediction
-  }else{
-    future_ego_s = ego.s;
-  }
-
-  const auto future_s = car.s + car.speed*delta_t;
-  future_ego_s += ego.speed*delta_t;
-  const auto in_same_lane = (car.d > (2 + (4*lane-2)) && (car.d < (2+4*lane+2)));
-
-  if (in_same_lane)
-  {
-    const auto in_front = (future_s >= future_ego_s-2.5); // Account for length of car
-    const auto too_close= ((future_s - future_ego_s-2.5) < collision_check_margin);
-    return in_front && too_close;
-  }
-  return false;
-}
-
-const double GetSafeLaneSpeed(const Car& ego, const Car& car, const Trajectory& prev_path, int lane, const double delta_t)
 {
   double future_ego_s;
   if(prev_path.size() > 0)
@@ -143,17 +104,16 @@ static auto RealizeStayInLane = [](
   }
 
   // Adjust for maintaining buffer
-  static const auto gain = 1.0;
+  static const auto gain = 2.5;
   auto extra_speed = gain*(closest_approach - buffer_distance);
   target_speed = max(1*.447, min(target_speed+extra_speed, speed_limit));
-  cout<<"target_speed "<<target_speed/.447<<" mph\n";
+  // cout<<"target_speed "<<target_speed/.447<<" mph\n";
   // Gentle acceleration
   double delta_speed = target_speed - ego.speed;
-  delta_speed = std::min(max_acceleration*timestep, std::max(-max_acceleration*timestep, delta_speed));
+  delta_speed = std::min(max_acceleration*timestep, std::max(-2*max_acceleration*timestep, delta_speed));
   double cmd_speed = ego.speed + delta_speed;
 
   cmd = {ego.lane, cmd_speed};
-//  cmd = GenerateCommandForTarget(target_lane, target_speed, ego);
 };
 
 class VehicleState {
@@ -180,9 +140,8 @@ public:
 };
 class LaneChangeState : public VehicleState {
 public:
-  double target_speed_;
   int target_lane_;
-  LaneChangeState(int lane): target_lane_(lane), target_speed_(speed_limit) {}
+  LaneChangeState(int lane): target_lane_(lane) {}
   virtual void RealizeState(const Car& ego,
                     const vector<Car>& traffic,
                     const Map& map,
@@ -195,8 +154,12 @@ public:
       // Perform lane change
       cout<<"Changing lane to "<<target_lane_<<endl;
       int cmd_lane = min(lanes_available - 1, max(0, target_lane_));
-      // target_speed_ = min(laneinfo.speed, speed_limit); // Set to safe speed
-      cmd = {cmd_lane, target_speed_};
+
+      // Use "Stay in lane" logic to compute safe speed for target lane
+      Car fake_ego(ego);
+      fake_ego.lane = cmd_lane;
+      RealizeStayInLane(fake_ego, traffic, map, prev_path, cmd);
+      // cmd = {cmd_lane, target_speed_};
     }else{
       cout<<"Lane not clear ..."<<endl;
       RealizeStayInLane(ego, traffic, map, prev_path, cmd);
@@ -212,9 +175,6 @@ using StateImplementation = std::function<void(const Car& ego,
                                                 const Trajectory& prev_path,
                                                 Command& cmd)>;
 
-//static std::map<States, StateImplementation> CommandGenerators = {{States::KL, RealizeStayInLane},
-//                                                                 {States::LCL, RealizeLaneChangeLeft},
-//                                                                 {States::LCR, RealizeLaneChangeRight}};
 class Behavior {
 private:
   FSM::Fsm<States, States::KL, Triggers> fsm_;
@@ -325,7 +285,6 @@ public:
 
     // Realize current state
     Command cmd;
-//    CommandGenerators[fsm_.state()](ego, traffic, map, prev_path, cmd);
     state_->RealizeState(ego, traffic, map, prev_path, cmd);
     current_speed_ = cmd.speed;
     current_lane_  = cmd.lane;
