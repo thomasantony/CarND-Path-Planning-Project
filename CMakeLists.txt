@@ -7,7 +7,7 @@ add_definitions(-std=c++14)
 set(CXX_FLAGS "-Wall")
 set(CMAKE_CXX_FLAGS, "${CXX_FLAGS}")
 
-set(sources src/main.cpp src/behavior.h)
+set(sources src/main.cpp src/behavior.h src/types.h)
 
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")

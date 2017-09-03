@@ -20,14 +20,14 @@ using json = nlohmann::json;
 
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
-double deg2rad(double x) { return x * pi() / 180; }
-double rad2deg(double x) { return x * 180 / pi(); }
+constexpr double deg2rad(double x) { return x * pi() / 180; }
+constexpr double rad2deg(double x) { return x * 180 / pi(); }
 
-double speed_limit = 49.5*0.447;
-double anchor_spacing = 30.0;
-double collision_check_margin = 30.0;
-double timestep = 0.02;
-double max_acceleration = 5; // m/s^2
+static const double speed_limit = 49.5*0.447;
+static const double anchor_spacing = 30.0;
+static const double collision_check_margin = 30.0;
+static const double timestep = 0.02;
+static const double max_acceleration = 5; // m/s^2
 int lanes_available = 3;
 
 //double target_speed = speed_limit;
@@ -36,41 +36,7 @@ int lanes_available = 3;
 //double current_speed = 0.0;
 //int current_lane = 1;
 
-struct Car {
-  int id;
-  double x;
-  double y;
-  double vx;
-  double vy;
-  double s;
-  double d;
-  double speed;
-  double yaw = 0.0;
-  int lane = 0;
-};
-typedef struct Car Car;
-struct Map {
-  vector<double> x;
-  vector<double> y;
-  vector<double> s;
-  vector<double> dx;
-  vector<double> dy;
-};
-typedef struct Map Map;
-struct Trajectory {
-  vector<double> x;
-  vector<double> y;
-
-  inline size_t size() const{
-    return x.size();
-  }
-};
-typedef struct Trajectory Trajectory;
-struct Command {
-  double speed;
-  int lane;
-};
-typedef struct Command Command;
+#include "types.h"
 
 void from_json(const json& j, Car& c) {
   c.id = j[0];
@@ -251,36 +217,12 @@ inline const tuple<double, double> LocalToGlobal(const tuple<double, double> inp
                          y0 + x * sin(theta0) + y * cos(theta0));
 }
 
-// Checks if car will collide with ego car, `delta_t` seconds in future
-const bool CheckCollision(const Car& ego, const Car& car, int lane, const double delta_t)
-{
-  const auto future_s = car.s + car.speed*delta_t;
-  const auto in_same_lane = (car.d > (2 + (4*lane-2)) && (car.d < (2+4*lane+2)));
 
-  if (in_same_lane)
-  {
-    const auto in_front = (future_s > ego.s);
-    const auto too_close= ((future_s - ego.s) < collision_check_margin);
-    return in_front && too_close;
-  }
-  return false;
-}
-
-const Trajectory GenerateTrajectory(int target_lane,
-                                    double target_speed,
+const Trajectory GenerateTrajectory(const Command& cmd,
                                     const Car& ego,
                                     const Map& map,
                                     const Trajectory& prev_path)
 {
-  // Lane shift one at a time
-  auto delta_lane = target_lane - ego.lane;
-  delta_lane = min(1, max(-1, delta_lane)); // Change one lane at a time
-  auto cmd_lane = max(0, ego.lane + delta_lane);
-  // Gentle acceleration
-  auto delta_speed = target_speed - ego.speed;
-  delta_speed = min(max_acceleration*timestep, max(-max_acceleration*timestep, delta_speed));
-  auto cmd_speed = ego.speed + delta_speed;
-
   vector<double> spline_anchor_x, spline_anchor_y;
 
   auto num_prev_points = prev_path.size();
@@ -288,7 +230,7 @@ const Trajectory GenerateTrajectory(int target_lane,
   // Start with car state as reference
   double ref_x = ego.x;
   double ref_y = ego.y;
-  double ref_yaw = deg2rad(ego.yaw);
+  double ref_yaw = ego.yaw;
   if (num_prev_points > 2) {
     // Else start at the end of prior waypoints
     // and use them as reference for coordinate transform
@@ -312,7 +254,7 @@ const Trajectory GenerateTrajectory(int target_lane,
   for(int i = 0; i < 3; i++)
   {
     auto wp = getXY(ego.s + anchor_spacing*(i+1),
-                    (2+ 4*cmd_lane),
+                    (2+4*cmd.lane),
                     map);
     spline_anchor_x.push_back(wp[0]);
     spline_anchor_y.push_back(wp[1]);
@@ -340,13 +282,16 @@ const Trajectory GenerateTrajectory(int target_lane,
   {
     output.x.push_back(prev_path.x[i]);
     output.y.push_back(prev_path.y[i]);
+    auto sd = getFrenet(prev_path.x[i], prev_path.y[i], ego.yaw, map);
+    output.s.push_back(sd[0]);
+    output.d.push_back(sd[1]);
   }
 
   // Find waypoint spacing based on speed
   const auto target_x = anchor_spacing;
   const auto target_y = s(target_x);
   const auto target_dist = sqrt(target_x*target_x + target_y*target_y);
-  double N = target_dist / (timestep*cmd_speed);
+  double N = target_dist / (timestep*cmd.speed);
 
   // Find intermediate points and transform back to global space
   double last_x = 0;
@@ -358,6 +303,11 @@ const Trajectory GenerateTrajectory(int target_lane,
 
     last_x = wp_x;
     tie(wp_x, wp_y) = LocalToGlobal(make_tuple(wp_x, wp_y), ref_state);
+
+    auto sd = getFrenet(wp_x, wp_y, ego.yaw, map);
+    output.s.push_back(sd[0]);
+    output.d.push_back(sd[1]);
+
     output.x.push_back(wp_x);
     output.y.push_back(wp_y);
   }
@@ -446,15 +396,10 @@ int main() {
 
           	json msgJson;
 
-            Car ego = {0, car_x, car_y, 0, 0, car_s, car_d, car_speed, deg2rad(car_yaw), 0};
-            prev_path = {previous_path_x, previous_path_y};
+            Car ego = {-1, car_x, car_y, 0, 0, car_s, car_d, car_speed, deg2rad(car_yaw), 0};
+            prev_path = {previous_path_x, previous_path_y, {}, {}, end_path_s, end_path_d};
 
             int num_prev_points = prev_path.size();
-
-            if(num_prev_points > 0)
-            {
-              ego.s = end_path_s; // Use the "right" s value for collision prediction
-            }
 
             vector<Car> traffic(sensor_fusion.size());
             for(int i=0; i<sensor_fusion.size(); i++)
