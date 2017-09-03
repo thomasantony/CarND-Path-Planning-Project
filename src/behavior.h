@@ -17,7 +17,7 @@ using namespace std;
 const bool CheckFrontCollision(const Car& ego, const Car& car, const Trajectory& prev_path, int lane, const double delta_t)
 {
   double future_ego_s;
-  if(prev_path.size() > 0)
+  if(0)//prev_path.size() > 0)
   {
     future_ego_s = prev_path.end_path_s; // Use the "right" s value for collision prediction
   }else{

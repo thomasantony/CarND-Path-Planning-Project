@@ -32,7 +32,7 @@ static const double lane_check_back_margin = -5.0; // m
 static const double lane_check_horizon = 1.5; //s
 
 static const double timestep = 0.02;
-static const double max_acceleration = 5; // m/s^2
+static const double max_acceleration = 10; // m/s^2
 static const double max_deceleration = 10; // m/s^2
 int lanes_available = 3;
 
