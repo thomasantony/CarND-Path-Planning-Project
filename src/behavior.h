@@ -171,6 +171,7 @@ public:
 enum class States { KL=0, LCL, LCR };
 enum class Triggers { StayInLane, DoLaneChangeLeft, DoLaneChangeRight };
 // Helper function for printing state
+// Source: https://stackoverflow.com/a/3342891/538379
 std::ostream& operator<<(std::ostream& out, const States value){
     const char* s = 0;
 #define PROCESS_VAL(p) case(p): s = #p; break;
@@ -183,12 +184,6 @@ std::ostream& operator<<(std::ostream& out, const States value){
 
     return out << s;
 }
-
-using StateImplementation = std::function<void(const Car& ego,
-                                                const vector<Car>& traffic,
-                                                const Map& map,
-                                                const Trajectory& prev_path,
-                                                Command& cmd)>;
 
 class Behavior {
 private:
