@@ -239,7 +239,7 @@ const Trajectory GenerateTrajectory(const Command& cmd,
   const auto target_dist = sqrt(target_x*target_x + target_y*target_y);
   double N = target_dist / (timestep*cmd.speed);
 
-  // Find intermediate points and transform back to global space
+  // Find new points and transform back to global space
   double last_x = 0;
   for(int i = 1; i <= 50 - num_prev_points; i++)
   {
@@ -249,10 +249,6 @@ const Trajectory GenerateTrajectory(const Command& cmd,
 
     last_x = wp_x;
     tie(wp_x, wp_y) = LocalToGlobal(make_tuple(wp_x, wp_y), ref_state);
-
-    auto sd = getFrenet(wp_x, wp_y, ego.yaw, map);
-    output.s.push_back(sd[0]);
-    output.d.push_back(sd[1]);
 
     output.x.push_back(wp_x);
     output.y.push_back(wp_y);

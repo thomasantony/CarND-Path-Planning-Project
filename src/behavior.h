@@ -47,12 +47,11 @@ const LaneInfo CheckLane(const Car& ego, const vector<Car>& traffic, int lane)
   const auto future_s_ub = ego.s + lane_check_front_margin + ego.speed*lane_check_horizon;
   const auto future_s_lb = ego.s + lane_check_back_margin + ego.speed*lane_check_horizon;
 
-  double lane_speed = speed_limit;
   double lane_buffer = 999.0;
 
   if(lane < 0 || lane >= lanes_available)
   {
-    return {lane, false, 0.0, 0.0};
+    return {false, 0.0};
   }
   for (auto& car: traffic)
   {
@@ -64,19 +63,18 @@ const LaneInfo CheckLane(const Car& ego, const vector<Car>& traffic, int lane)
       const auto future_danger = (future_s_lb < future_s) && (future_s < future_s_ub);
       if (in_danger_zone or future_danger)
       {
-        return {lane, false, 0.0, 0.0};
+        return {false, 0.0};
       }else{
         // Lane is clear, find speed limit and buffer
         auto buffer = car.s - ego.s;
         if(buffer < lane_buffer)
         {
           lane_buffer = buffer;
-          lane_speed = car.speed;
         }
       }
     }
   }
-  return {lane, true, lane_speed, lane_buffer};
+  return {true, lane_buffer};
 }
 void RealizeStayInLane(
     const Car& ego,
@@ -110,10 +108,10 @@ void RealizeStayInLane(
   static const auto gain = 5.0;
   auto extra_speed = gain*(closest_approach - buffer_distance);
   target_speed = max(0.5*.447, min(target_speed+extra_speed, speed_limit));
-  // cout<<"target_speed "<<target_speed/.447<<" mph\n";
+
   // Gentle acceleration
   double delta_speed = target_speed - ego.speed;
-  delta_speed = std::min(max_acceleration*timestep, std::max(-2*max_acceleration*timestep, delta_speed));
+  delta_speed = std::min(max_acceleration*timestep, std::max(-max_deceleration*timestep, delta_speed));
   double cmd_speed = ego.speed + delta_speed;
 
   cmd = {ego.lane, cmd_speed};
@@ -154,14 +152,12 @@ public:
     if(laneinfo.clear)
     {
       // Perform lane change
-      // cout<<"Changing lane to "<<target_lane_<<endl;
       int cmd_lane = min(lanes_available - 1, max(0, target_lane_));
 
       // Use "Stay in lane" logic to compute safe speed for target lane
       Car fake_ego(ego);
       fake_ego.lane = cmd_lane;
       RealizeStayInLane(fake_ego, traffic, map, prev_path, cmd);
-      // cmd = {cmd_lane, target_speed_};
     }else{
       // cout<<"Lane not clear ..."<<endl;
       RealizeStayInLane(ego, traffic, map, prev_path, cmd);
@@ -218,11 +214,9 @@ public:
     double target_speed;
     int target_lane;
 
-    vector<States> available_states = {States::KL};
     ego.lane = current_lane_;
     ego.speed = current_speed_;
 
-    // auto delta_t = 1.5;
     bool in_correct_lane;
     auto current_state = fsm_.state();
     if (current_state == States::KL) {
@@ -236,16 +230,17 @@ public:
           break;
         }
       }
-      const LaneInfo& left_lane = CheckLane(ego, traffic, ego.lane - 1);
-      const LaneInfo& right_lane = CheckLane(ego, traffic, ego.lane + 1);
-
       cout<<fsm_.state()<<" ";
       cout<<"Front:"<<(will_collide?"Blocked":"Clear")<<" ";
-      cout<<"Left:"<<(left_lane.clear?"Clear":"Blocked")<<" ";
-      cout<<"Right:"<<(left_lane.clear?"Clear":"Blocked")<<"\n";
 
       if (will_collide) {
         const bool do_lcl = false, do_lcr = false;
+        const LaneInfo& left_lane = CheckLane(ego, traffic, ego.lane - 1);
+        const LaneInfo& right_lane = CheckLane(ego, traffic, ego.lane + 1);
+
+        cout<<"Left:"<<(left_lane.clear?"Clear":"Blocked")<<" ";
+        cout<<"Right:"<<(left_lane.clear?"Clear":"Blocked")<<"\n";
+
         // If both lanes are clear, pick one with bigger buffer
         if(left_lane.clear && right_lane.clear)
         {
@@ -260,6 +255,8 @@ public:
           fsm_.execute(Triggers::DoLaneChangeRight);
         }
         // Stay in lane if lane change not possible
+      }else{
+        cout<<endl;
       }
     }
     else if (current_state == States::LCL)
