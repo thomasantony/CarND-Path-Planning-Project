@@ -267,7 +267,7 @@ public:
           fsm_.execute(Triggers::DoLaneChangeLeft);
         } else if (right_lane.clear) {
           // LCR
-          cout<<"Switching state to LCR"<<endl;
+          // cout<<"Switching state to LCR"<<endl;
           fsm_.execute(Triggers::DoLaneChangeRight);
         }
       }
@@ -279,7 +279,7 @@ public:
         in_correct_lane = ego.d > (2 + (4*lc_state->target_lane_-2)) && (ego.d < (2+4*lc_state->target_lane_+2));
         if(in_correct_lane)
         {
-          cout<<"Switching state to KL from LCL"<<endl;
+          // cout<<"Switching state to KL from LCL"<<endl;
           fsm_.execute(Triggers::StayInLane);
         }
     }else if(current_state == States::LCR)
@@ -289,7 +289,7 @@ public:
         in_correct_lane = ego.d > (2 + (4*lc_state->target_lane_-2)) && (ego.d < (2+4*lc_state->target_lane_+2));
         if(in_correct_lane)
         {
-          cout<<"Switching state to KL from LCR"<<endl;
+          // cout<<"Switching state to KL from LCR"<<endl;
           fsm_.execute(Triggers::StayInLane);
         }
     }else{
