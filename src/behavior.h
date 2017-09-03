@@ -104,9 +104,9 @@ static auto RealizeStayInLane = [](
   }
 
   // Adjust for maintaining buffer
-  static const auto gain = 2.5;
+  static const auto gain = 5.0;
   auto extra_speed = gain*(closest_approach - buffer_distance);
-  target_speed = max(1*.447, min(target_speed+extra_speed, speed_limit));
+  target_speed = max(0.5*.447, min(target_speed+extra_speed, speed_limit));
   // cout<<"target_speed "<<target_speed/.447<<" mph\n";
   // Gentle acceleration
   double delta_speed = target_speed - ego.speed;
@@ -134,7 +134,6 @@ public:
                     const Map& map,
                     const Trajectory& prev_path,
                     Command& cmd) {
-    cout<<"In Keep Lane State"<<endl;
     RealizeStayInLane(ego, traffic, map, prev_path, cmd);
   }
 };
@@ -152,7 +151,7 @@ public:
     if(laneinfo.clear)
     {
       // Perform lane change
-      cout<<"Changing lane to "<<target_lane_<<endl;
+      // cout<<"Changing lane to "<<target_lane_<<endl;
       int cmd_lane = min(lanes_available - 1, max(0, target_lane_));
 
       // Use "Stay in lane" logic to compute safe speed for target lane
@@ -161,13 +160,26 @@ public:
       RealizeStayInLane(fake_ego, traffic, map, prev_path, cmd);
       // cmd = {cmd_lane, target_speed_};
     }else{
-      cout<<"Lane not clear ..."<<endl;
+      // cout<<"Lane not clear ..."<<endl;
       RealizeStayInLane(ego, traffic, map, prev_path, cmd);
     }
   }
 };
-enum class States { KL, LCL, LCR };
+enum class States { KL=0, LCL, LCR };
 enum class Triggers { StayInLane, DoLaneChangeLeft, DoLaneChangeRight };
+// Helper function for printing state
+std::ostream& operator<<(std::ostream& out, const States value){
+    const char* s = 0;
+#define PROCESS_VAL(p) case(p): s = #p; break;
+    switch(value){
+        PROCESS_VAL(States::KL);
+        PROCESS_VAL(States::LCL);
+        PROCESS_VAL(States::LCR);
+    }
+#undef PROCESS_VAL
+
+    return out << s;
+}
 
 using StateImplementation = std::function<void(const Car& ego,
                                                 const vector<Car>& traffic,
@@ -180,11 +192,10 @@ private:
   FSM::Fsm<States, States::KL, Triggers> fsm_;
   int current_lane_;
   double current_speed_;
-  double speed_limit_;
   Command target_;
   VehicleState* state_;
 public:
-  Behavior(): current_lane_(1), current_speed_(0.0), speed_limit_(49.5*0.447) {
+  Behavior(): current_lane_(1), current_speed_(0.0) {
     state_ = new KeepLaneState();
     fsm_.add_transitions({
              { States::KL, States::LCL, Triggers::DoLaneChangeLeft,[&]{return true;}, [&]{
@@ -232,25 +243,27 @@ public:
       const LaneInfo left_lane = CheckLane(ego, traffic, ego.lane - 1, collision_horizon);
       const LaneInfo right_lane = CheckLane(ego, traffic, ego.lane + 1, collision_horizon);
 
-      cout<<(will_collide?"Car in front":"Front clear")<<" " \
-          <<(left_lane.clear?"Left lane clear":"Left lane blocked")<<" " \
-          <<(right_lane.clear?"Right lane clear":"Right lane blocked")<<endl;
+      cout<<fsm_.state()<<" ";
+      cout<<"Front:"<<(will_collide?"Blocked":"Clear")<<" ";
+      cout<<"Left:"<<(left_lane.clear?"Clear":"Blocked")<<" ";
+      cout<<"Right:"<<(left_lane.clear?"Clear":"Blocked")<<"\r";
+
       if (will_collide) {
         const bool do_lcl = false, do_lcr = false;
         if(left_lane.clear && right_lane.clear)
         {
           if (left_lane.buffer >= right_lane.buffer) {
             // LCL
-            cout<<"Switching state to LCL"<<endl;
+            // cout<<"Switching state to LCL"<<endl;
             fsm_.execute(Triggers::DoLaneChangeLeft);
           } else {
             // LCR
-            cout<<"Switching state to LCR"<<endl;
+            // cout<<"Switching state to LCR"<<endl;
             fsm_.execute(Triggers::DoLaneChangeRight);
           }
         } else if (left_lane.clear) {
           // LCL
-          cout<<"Switching state to LCL"<<endl;
+          // cout<<"Switching state to LCL"<<endl;
           fsm_.execute(Triggers::DoLaneChangeLeft);
         } else if (right_lane.clear) {
           // LCR

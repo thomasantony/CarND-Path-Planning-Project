@@ -26,7 +26,7 @@ constexpr double rad2deg(double x) { return x * 180 / pi(); }
 static const double speed_limit = 49.0*0.447;
 static const double anchor_spacing = 30.0;
 static const double collision_check_margin = 35.0;
-static const auto buffer_distance = collision_check_margin - 5.0;
+static const auto buffer_distance = collision_check_margin - 1.0;
 static const double lane_check_front_margin = 40.0;
 static const double lane_check_back_margin = -5.0;
 static const double timestep = 0.02;
