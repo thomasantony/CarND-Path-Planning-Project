@@ -23,12 +23,14 @@ constexpr double pi() { return M_PI; }
 constexpr double deg2rad(double x) { return x * pi() / 180; }
 constexpr double rad2deg(double x) { return x * 180 / pi(); }
 
-static const double speed_limit = 49.0*0.447;
-static const double anchor_spacing = 30.0;
-static const double collision_check_margin = 35.0;
-static const auto buffer_distance = collision_check_margin - 1.0;
-static const double lane_check_front_margin = 40.0;
-static const double lane_check_back_margin = -5.0;
+static const double speed_limit = 49.0*0.447; // m/s
+static const double anchor_spacing = 30.0; // m
+static const double collision_check_margin = 35.0; // m
+static const auto buffer_distance = collision_check_margin - 1.0; // m
+static const double lane_check_front_margin = 40.0; // m
+static const double lane_check_back_margin = -5.0; // m
+static const double lane_check_horizon = 1.5; //s
+
 static const double timestep = 0.02;
 static const double max_acceleration = 5; // m/s^2
 int lanes_available = 3;
