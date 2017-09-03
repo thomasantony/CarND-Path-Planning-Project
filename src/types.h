@@ -46,4 +46,12 @@ struct Command {
 };
 typedef struct Command Command;
 
+struct LaneInfo{
+  int number;
+  bool clear;
+  double speed;
+  double buffer;
+};
+using LaneInfo = struct LaneInfo;
+
 #endif //PATH_PLANNING_TYPES_H

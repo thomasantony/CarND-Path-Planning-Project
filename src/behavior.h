@@ -31,7 +31,7 @@ const Command GenerateCommandForTarget(int target_lane, double target_speed, con
 const bool CheckFrontCollision(const Car& ego, const Car& car, const Trajectory& prev_path, int lane, const double delta_t)
 {
   double future_ego_s;
-  if(0) //prev_path.size() > 0)
+  if(0)//prev_path.size() > 0)
   {
     future_ego_s = prev_path.end_path_s; // Use the "right" s value for collision prediction
   }else{
@@ -51,49 +51,102 @@ const bool CheckFrontCollision(const Car& ego, const Car& car, const Trajectory&
   return false;
 }
 
-// Checks if car will collide with ego car, `delta_t` seconds in future
-const bool IsLaneClear(const Car& ego, const vector<Car>& traffic, int lane, const double delta_t)
+const double GetSafeLaneSpeed(const Car& ego, const Car& car, const Trajectory& prev_path, int lane, const double delta_t)
 {
-  const auto upper_bound_s = ego.s + collision_check_margin;
-  const auto lower_bound_s = ego.s - collision_check_margin;
+  double future_ego_s;
+  if(prev_path.size() > 0)
+  {
+    future_ego_s = prev_path.end_path_s; // Use the "right" s value for collision prediction
+  }else{
+    future_ego_s = ego.s;
+  }
 
+  const auto future_s = car.s + car.speed*delta_t;
+  future_ego_s += ego.speed*delta_t;
+  const auto in_same_lane = (car.d > (2 + (4*lane-2)) && (car.d < (2+4*lane+2)));
+
+  if (in_same_lane)
+  {
+    const auto in_front = (future_s >= future_ego_s-2.5); // Account for length of car
+    const auto too_close= ((future_s - future_ego_s-2.5) < collision_check_margin);
+    return in_front && too_close;
+  }
+  return false;
+}
+
+// Returns <is_clear, car_speed, buffer_dist>
+const LaneInfo CheckLane(const Car& ego, const vector<Car>& traffic, int lane, const double delta_t)
+{
+  const auto s_ub = ego.s + lane_check_front_margin;
+  const auto s_lb = ego.s + lane_check_back_margin;
+
+  const auto future_s_ub = ego.s + lane_check_front_margin + ego.speed*1.5;
+  const auto future_s_lb = ego.s + lane_check_back_margin + ego.speed*1.5;
+
+  double lane_speed = speed_limit;
+  double lane_buffer = 999.0;
+  double closest_car_s = 999.0;
+
+  if(lane < 0 || lane >= lanes_available)
+  {
+    return {lane, false, 0.0, 0.0};
+  }
   for (auto& car: traffic)
   {
-    const auto future_s = car.s + car.speed*delta_t;
+    const auto future_s = car.s + car.speed*1.5;
     const auto in_lane = (car.d > (2 + (4*lane-2)) && (car.d < (2+4*lane+2)));
     if (in_lane)
     {
-      const auto in_danger_zone = (lower_bound_s < car.s) && (car.s < upper_bound_s);
-      const auto future_danger = (lower_bound_s < future_s) && (future_s < upper_bound_s);
+      const auto in_danger_zone = (s_lb < car.s) && (car.s < s_ub);
+      const auto future_danger = (future_s_lb < future_s) && (future_s < future_s_ub);
       if (in_danger_zone or future_danger)
       {
-        return false;
+        return {lane, false, 0.0, 0.0};
+      }else{
+        // Lane is clear, find speed limit and buffer
+        auto buffer = car.s - ego.s;
+        if(buffer < lane_buffer)
+        {
+          lane_buffer = buffer;
+          lane_speed = car.speed;
+        }
       }
     }
   }
-  return true;
+  return {lane, true, lane_speed, lane_buffer};
 }
-
 static auto RealizeStayInLane = [](
     const Car& ego,
     const vector<Car>& traffic,
     const Map& map,
     const Trajectory& prev_path,
     Command& cmd){
+
   double target_speed = speed_limit;
-
-
+  double closest_approach = collision_check_margin;
   // Loop over other detected cars
+  // Match speed of closest car in front
   for(int i=0; i<traffic.size(); i++)
   {
     const Car& car = traffic[i];
     double collision_horizon = prev_path.size()*timestep;
     if(CheckFrontCollision(ego, car, prev_path, ego.lane, collision_horizon))
     {
-      target_speed = min(car.speed, speed_limit);
-      break;
+      // Use proportional controller to maintain buffer
+      auto dist_to_car = car.s - ego.s;
+      if(dist_to_car < closest_approach)
+      {
+        target_speed = min(car.speed, target_speed);
+        closest_approach = dist_to_car;
+      }
     }
   }
+
+  // Adjust for maintaining buffer
+  static const auto gain = 1.0;
+  auto extra_speed = gain*(closest_approach - buffer_distance);
+  target_speed = max(1*.447, min(target_speed+extra_speed, speed_limit));
+  cout<<"target_speed "<<target_speed/.447<<" mph\n";
   // Gentle acceleration
   double delta_speed = target_speed - ego.speed;
   delta_speed = std::min(max_acceleration*timestep, std::max(-max_acceleration*timestep, delta_speed));
@@ -135,61 +188,23 @@ public:
                     const Map& map,
                     const Trajectory& prev_path,
                     Command& cmd) {
-    if(IsLaneClear(ego, traffic, target_lane_, timestep*prev_path.size()))
+
+    const LaneInfo& laneinfo = CheckLane(ego, traffic, target_lane_, timestep*prev_path.size());
+    if(laneinfo.clear)
     {
       // Perform lane change
       cout<<"Changing lane to "<<target_lane_<<endl;
       int cmd_lane = min(lanes_available - 1, max(0, target_lane_));
-      cmd = {cmd_lane, speed_limit};
+      // target_speed_ = min(laneinfo.speed, speed_limit); // Set to safe speed
+      cmd = {cmd_lane, target_speed_};
     }else{
       cout<<"Lane not clear ..."<<endl;
-
       RealizeStayInLane(ego, traffic, map, prev_path, cmd);
     }
   }
 };
 enum class States { KL, LCL, LCR };
 enum class Triggers { StayInLane, DoLaneChangeLeft, DoLaneChangeRight };
-//
-//static auto RealizeLaneChangeLeft = [](
-//    const Car& ego,
-//    const vector<Car>& traffic,
-//    const Map& map,
-//    const Trajectory& prev_path,
-//    Command& cmd){
-//
-//  if(IsLaneClear(ego, traffic, ego.lane - 1, timestep*prev_path.size())
-//     && IsLaneClear(ego, traffic, ego.lane - 1, 0))
-//  {
-//    // Perform lane change
-//    cout<<"Changing lane left."<<endl;
-//    int cmd_lane = min(lanes_available - 1, max(0, ego.lane - 1));
-//    cmd = {cmd_lane, speed_limit};
-//  }else{
-//    cout<<"Lane not clear ..."<<endl;
-//    RealizeStayInLane(ego, traffic, map, prev_path, cmd);
-//  }
-//};
-//
-//static auto RealizeLaneChangeRight = [](
-//    const Car& ego,
-//    const vector<Car>& traffic,
-//    const Map& map,
-//    const Trajectory& prev_path,
-//    Command& cmd){
-//
-//  if(IsLaneClear(ego, traffic, ego.lane + 1, timestep*prev_path.size())
-//     && IsLaneClear(ego, traffic, ego.lane + 1, 0))
-//  {
-//    // Perform lane change
-//    cout<<"Changing lane right."<<endl;
-//    int cmd_lane = min(lanes_available - 1, max(0, ego.lane + 1));
-//    cmd = {cmd_lane, speed_limit};
-//  }else{
-//    cout<<"Lane not clear ..."<<endl;
-//    RealizeStayInLane(ego, traffic, map, prev_path, cmd);
-//  }
-//};
 
 using StateImplementation = std::function<void(const Car& ego,
                                                 const vector<Car>& traffic,
@@ -237,27 +252,8 @@ public:
     vector<States> available_states = {States::KL};
     ego.lane = current_lane_;
     ego.speed = current_speed_;
-//    if(ego.lane > 0)
-//    {
-//      available_states.push_back(States::LCL);
-////      available_states.push_back("PLCL");
-//    }
-//    if(ego.lane < lanes_available-1)
-//    {
-//      available_states.push_back(States::LCR);
-////      available_states.push_back("PLCR");
-//    }
-//    // Find cost for each possible state
-//    vector<double> costs(available_states.size());
-//    Command cmd;
-//    for(auto& state : available_states)
-//    {
-//      CommandGenerators[state](ego, traffic, map, prev_path, cmd);
-//      auto pred_traj = GenerateTrajectory(cmd, ego, map, prev_path);
-//      // auto cost = find_cost(pred_traj);
-//      costs.push_back(0.0);
-//    }
-    auto delta_t = 1.5;
+
+    // auto delta_t = 1.5;
     bool in_correct_lane;
     auto current_state = fsm_.state();
     if (current_state == States::KL) {
@@ -272,19 +268,31 @@ public:
         }
       }
       bool left_lane_clear = false, right_lane_clear = false;
-      if (ego.lane > 0) {
-        left_lane_clear = IsLaneClear(ego, traffic, ego.lane - 1, collision_horizon);
-      }
-      if (ego.lane < lanes_available - 1) {
-        right_lane_clear = IsLaneClear(ego, traffic, ego.lane + 1, collision_horizon);
-      }
-      cout<<will_collide<<" "<<left_lane_clear<<" "<<right_lane_clear<<endl;
+
+      const LaneInfo left_lane = CheckLane(ego, traffic, ego.lane - 1, collision_horizon);
+      const LaneInfo right_lane = CheckLane(ego, traffic, ego.lane + 1, collision_horizon);
+
+      cout<<(will_collide?"Car in front":"Front clear")<<" " \
+          <<(left_lane.clear?"Left lane clear":"Left lane blocked")<<" " \
+          <<(right_lane.clear?"Right lane clear":"Right lane blocked")<<endl;
       if (will_collide) {
-        if (left_lane_clear) {
+        const bool do_lcl = false, do_lcr = false;
+        if(left_lane.clear && right_lane.clear)
+        {
+          if (left_lane.buffer >= right_lane.buffer) {
+            // LCL
+            cout<<"Switching state to LCL"<<endl;
+            fsm_.execute(Triggers::DoLaneChangeLeft);
+          } else {
+            // LCR
+            cout<<"Switching state to LCR"<<endl;
+            fsm_.execute(Triggers::DoLaneChangeRight);
+          }
+        } else if (left_lane.clear) {
           // LCL
           cout<<"Switching state to LCL"<<endl;
           fsm_.execute(Triggers::DoLaneChangeLeft);
-        } else if (will_collide && right_lane_clear) {
+        } else if (right_lane.clear) {
           // LCR
           cout<<"Switching state to LCR"<<endl;
           fsm_.execute(Triggers::DoLaneChangeRight);
@@ -321,7 +329,6 @@ public:
     state_->RealizeState(ego, traffic, map, prev_path, cmd);
     current_speed_ = cmd.speed;
     current_lane_  = cmd.lane;
-    cout<<"Commanding speed = "<<cmd.speed<<" and lane = "<<cmd.lane<<endl;
     // Store computed trajectory for staying in lane
     return GenerateTrajectory(cmd, ego, map, prev_path);
   }

@@ -23,9 +23,12 @@ constexpr double pi() { return M_PI; }
 constexpr double deg2rad(double x) { return x * pi() / 180; }
 constexpr double rad2deg(double x) { return x * 180 / pi(); }
 
-static const double speed_limit = 49.5*0.447;
+static const double speed_limit = 49.0*0.447;
 static const double anchor_spacing = 30.0;
 static const double collision_check_margin = 30.0;
+static const auto buffer_distance = collision_check_margin - 5.0;
+static const double lane_check_front_margin = 40.0;
+static const double lane_check_back_margin = -5.0;
 static const double timestep = 0.02;
 static const double max_acceleration = 5; // m/s^2
 int lanes_available = 3;
@@ -225,12 +228,14 @@ const Trajectory GenerateTrajectory(const Command& cmd,
 {
   vector<double> spline_anchor_x, spline_anchor_y;
 
-  auto num_prev_points = prev_path.size();
+  const auto num_prev_points = prev_path.size();
   // Reference state for coordinate transformation
   // Start with car state as reference
   double ref_x = ego.x;
   double ref_y = ego.y;
   double ref_yaw = ego.yaw;
+
+  double ego_s = ego.s;
   if (num_prev_points > 2) {
     // Else start at the end of prior waypoints
     // and use them as reference for coordinate transform
@@ -245,6 +250,7 @@ const Trajectory GenerateTrajectory(const Command& cmd,
 
     spline_anchor_x.push_back(prev_path.x[num_prev_points-2]);
     spline_anchor_y.push_back(prev_path.y[num_prev_points-2]);
+    ego_s = prev_path.end_path_s; // Helpful for making smooth trajectories
   }
   // position at t
   spline_anchor_x.push_back(ref_x);
@@ -253,7 +259,7 @@ const Trajectory GenerateTrajectory(const Command& cmd,
   // Add equally spaced points in Frenet space
   for(int i = 0; i < 3; i++)
   {
-    auto wp = getXY(ego.s + anchor_spacing*(i+1),
+    auto wp = getXY(ego_s + anchor_spacing*(i+1),
                     (2+4*cmd.lane),
                     map);
     spline_anchor_x.push_back(wp[0]);
