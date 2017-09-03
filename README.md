@@ -297,6 +297,12 @@ virtual void RealizeState(const Car& ego,
 ```
 The `RealizeState` method in the `LaneChangeState` class describes how a lane change is performed. First we check if the target lane is clear, if it is not, we stay in the current lane. If the target lane is clear, we use the `StayInLane` logic to compute a safe target speed in the new lane.
 
+### A note about cost functions
+
+The current implementation is a rather simple one with only three states and hence cost functions were not required to get the desired functionality. The current planner is extremely conservative and may not be the most efficient. However, the framework is capable of handling cost functions. If there were more states in the system, for example, "Prepare Lane Change Left/Right", if-else conditions would be too complicated to use.
+
+In that case, it would be prudent to switch to a behavior planner based on cost functions. The trajectory generator was refactored into a separate function for precisely this reason. It will be possible to generate trajectories for each possible state and evaluate cost functions over those predicted trajectories in order to determine state transitions. However, this was not implemented due to time constraints and because the current version satisfies the requirements.
+
 ---
 
 ### Simulator.
