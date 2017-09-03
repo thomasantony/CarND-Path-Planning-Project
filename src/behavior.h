@@ -7,9 +7,11 @@
 
 using namespace std;
 
-#include "fsm.h"
 #include "types.h"
-#include "cost_functions.h"
+// Finite State Machine
+#include "fsm.h"
+// Trajectory generator
+#include "trajectory.h"
 
 // Checks if car will collide with ego car, `delta_t` seconds in future
 const bool CheckFrontCollision(const Car& ego, const Car& car, const Trajectory& prev_path, int lane, const double delta_t)

@@ -19,6 +19,18 @@ struct Car {
   double s_actual; //
 };
 typedef struct Car Car;
+// Used by JSON module to parse JSON into Car object
+void from_json(const json& j, Car& c) {
+  c.id = j[0];
+  c.x = j[1];
+  c.y = j[2];
+  c.vx = j[3];
+  c.vy = j[4];
+  c.speed = sqrt(c.vx*c.vx + c.vy*c.vy);
+  c.s = j[5];
+  c.d = j[6];
+}
+
 struct Map {
   vector<double> x;
   vector<double> y;
